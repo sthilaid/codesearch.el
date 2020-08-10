@@ -18,14 +18,15 @@
 
     (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
 
-    (let ((trigram-strings (vconcat (mapcar 'car trigrams)))
-          (trigram-indices (vconcat (mapcar 'cdr trigrams))))
-      (list trigram-strings trigram-indices))))
+    (let* ((trigram-strings (vconcat (mapcar 'car trigrams)))
+           (trigrams-smallcase-strings (vconcat (mapcar (lambda (tri) (downcase tri)) trigram-strings)))
+           (trigram-indices (vconcat (mapcar 'cdr trigrams))))
+      (list trigram-strings trigrams-smallcase-strings trigram-indices))))
 
-(setq test-data (codesearch-get-trigrams "/home/david/emacs-stuff/codesearch.el/codesearch.el"))
-(pp (test-data))
+(setq TEST-DATA (codesearch-get-trigrams "/home/david/emacs-stuff/codesearch.el/codesearch.el"))
+(pp TEST-DATA)
 
-(defun codesearch-search (query data)
+(defun codesearch-search (query data &optional is-case-sensitive?)
   (defun split-query (query)
     (let ((l (length query))
           (res nil))
@@ -37,10 +38,9 @@
                           res))))))
 
   (let* ((tri-queries (split-query query))
-         (data-trigrams (elt data 0))
-         (data-indices (elt data 1))
+         (data-trigrams (elt data (if is-case-sensitive? 0 1)))
+         (data-indices (elt data 2))
          (queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-queries)))
-
     (if (seq-some 'not queries-indices)
         nil
       (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
@@ -61,4 +61,4 @@
                         smallest-q-res
                         nil)))))))
 
-(pp (codesearch-search "string" (codesearch-get-trigrams (buffer-file-name (current-buffer)))))
+(pp (codesearch-search "string" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
