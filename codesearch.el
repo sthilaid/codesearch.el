@@ -1,4 +1,9 @@
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; generate trigrams data
+
+(cl-defstruct codesearch-result filepath trigrams smallcase-trigrams indices)
+
 (defun codesearch-get-trigrams (filepath)
   (defun add-to-data (tri pos datas)
     (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
@@ -21,10 +26,16 @@
     (let* ((trigram-strings (vconcat (mapcar 'car trigrams)))
            (trigrams-smallcase-strings (vconcat (mapcar (lambda (tri) (downcase tri)) trigram-strings)))
            (trigram-indices (vconcat (mapcar 'cdr trigrams))))
-      (list trigram-strings trigrams-smallcase-strings trigram-indices))))
+      (make-codesearch-result :filepath filepath
+                              :trigrams trigram-strings
+                              :smallcase-trigrams trigrams-smallcase-strings
+                              :indices trigram-indices))))
 
-(setq TEST-DATA (codesearch-get-trigrams "/home/david/emacs-stuff/codesearch.el/codesearch.el"))
+(setq TEST-DATA (codesearch-get-trigrams (buffer-file-name (current-buffer))))
 (pp TEST-DATA)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; perform a search query in the data and return results
 
 (defun codesearch-search (query data &optional is-case-sensitive?)
   (defun split-query (query)
@@ -39,32 +50,36 @@
             (split-string query " *| *" t " *")))
 
   (let* ((tri-queries (split-query query))
-         (data-trigrams (elt data (if is-case-sensitive? 0 1)))
-         (data-indices (elt data 2)))
-    (mapcar (lambda (tri-query)
-              (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
-                (if (seq-some 'not queries-indices)
-                    nil
-                  (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
-                                                                       (mapcar (lambda (x) (- x offset))
-                                                                               (elt data-indices index))))
-                                               tri-query
-                                               queries-indices)))
-                    (if (= (length queries-res) 1)
-                        queries-res
-                      (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
-                             (smallest-q-res (car sorted-queries-res)))
-                        (seq-reduce (lambda (acc smallest-q-index)
-                                      (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
-                                                                                 q-res))
-                                                       (cdr sorted-queries-res))
-                                          (cons smallest-q-index acc)
-                                        acc))
-                                    smallest-q-res
-                                    nil)))))))
-            tri-queries)))
+         (data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
+         (data-indices (codesearch-result-indices data))
+         (results
+          (mapcar (lambda (tri-query)
+                    (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
+                      (if (seq-some 'not queries-indices)
+                          nil
+                        (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
+                                                                             (mapcar (lambda (x) (- x offset))
+                                                                                     (elt data-indices index))))
+                                                     tri-query
+                                                     queries-indices)))
+                          (if (= (length queries-res) 1)
+                              queries-res
+                            (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
+                                   (smallest-q-res (car sorted-queries-res)))
+                              (seq-reduce (lambda (acc smallest-q-index)
+                                            (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
+                                                                                       q-res))
+                                                             (cdr sorted-queries-res))
+                                                (cons smallest-q-index acc)
+                                              acc))
+                                          smallest-q-res
+                                          nil)))))))
+                  tri-queries)))
+    (if (> (length results) 0)
+        (cons (codesearch-result-filepath data) results)
+      nil)))
 
-(pp (codesearch-search "  string|   seq" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
+(pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; interactive search and results presentation
@@ -75,21 +90,43 @@
 	  (buffer-substring (region-beginning) (region-end))
 	(current-word)))
 
+(defun codesearch-result-find-file ()
+  (interactive)
+  (let ((entry (tabulated-list-get-entry)))
+    (if entry
+        (progn (pp entry)
+               (find-file (elt entry 2))
+               (goto-char (elt entry 3))))))
+
 (define-derived-mode codesearch-results-mode tabulated-list-mode "codesearch-results mode"
   "Major mode browsing codesearch query results"
-  (setq tabulated-list-format (vector (list "result"  100 t)
-                                      ;(list "line"    100 t)
-                                      ))
-  (setq tabulated-list-entries
-        (mapcar (lambda (result)
-                  (list result (vector (format "%d" result))))
-                codesearch-query-result))
-  (setq tabulated-list-sort-key (cons "result" nil))
+  (let* ((file (car codesearch-query-result))
+         (results (apply 'append (cdr codesearch-query-result)))
+         (max-filename-width (+ (length file) 5)))
+    (setq tabulated-list-format (vector (list "file"  max-filename-width t)
+                                        (list "text"    100 t)))
+
+    (let ((entries (with-temp-buffer
+                     (insert-file-contents-literally file)
+                     (let ((lines (mapcar (lambda (pos) (line-number-at-pos pos t)) results)))
+                       (seq-mapn (lambda (pos line)
+                                   (goto-char pos)
+                                   (let ((line-start (line-beginning-position))
+                                         (line-end (line-end-position)))
+                                     (list pos (vector (format "%s:%d" file line)
+                                                       (buffer-substring line-start line-end)
+                                                       file
+                                                       pos))))
+                                 results
+                                 lines)))))
+      (setq tabulated-list-entries entries))
+    (setq tabulated-list-sort-key (cons "file" nil)))
+    
   (tabulated-list-init-header)
   (use-local-map (let ((map (make-sparse-keymap)))
                    (set-keymap-parent map tabulated-list-mode-map)
-                   ;(define-key map (kbd "s") 'ide-browser-change-sort-key)
-                   ;(define-key map (kbd "<return>") 'ide-browser-find-file)
+                                        ;(define-key map (kbd "s") 'ide-browser-change-sort-key)
+                   (define-key map (kbd "<return>") 'codesearch-result-find-file)
                    map)))
 
 (defvar codesearch-global-data nil)
@@ -107,7 +144,7 @@
   ;; todo: check that codesearch-global-data is valid
   
   (with-current-buffer (get-buffer-create "*codesearch-results*")
-    (let ((codesearch-query-result (apply 'append (codesearch-search query codesearch-global-data))))
+    (let ((codesearch-query-result (codesearch-search query codesearch-global-data)))
       (codesearch-results-mode))
     (tabulated-list-print)
     (switch-to-buffer (current-buffer))))
