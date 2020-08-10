@@ -26,20 +26,20 @@
     (let ((l (length query))
           (res nil))
       (if (< l 3)
-          l
+          (list (cons query 0))
         (dotimes (index (- l 2) res)
           (setq res (cons (cons (substring query index (+ index 3))
                                 index)
                           res))))))
 
   (let* ((tri-queries (split-query query))
-         (queries-res (seq-reduce (lambda (acc q) (let ((q-tri (seq-find (lambda (tri) (string= (car tri) (car q))) trigrams)))
-                                                    (cons (cons (car q-tri) (mapcar (lambda (x) (- x (cdr q)))
+         (queries-res (seq-reduce (lambda (acc q) (let ((offset (cdr q))
+                                                        (q-tri (seq-find (lambda (tri) (string= (car tri) (car q))) trigrams)))
+                                                    (cons (cons (car q-tri) (mapcar (lambda (x) (- x offset))
                                                                                     (cdr q-tri)))
                                                           acc)))
                                   tri-queries
-                                  nil))
-         (valid-res ))
+                                  nil)))
     (if (= (length queries-res) 1)
         queries-res
       (let ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y))))))
