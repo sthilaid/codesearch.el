@@ -15,13 +15,17 @@
           (let ((tri (buffer-substring (point) (+ (point) 3))))
             (setq trigrams (add-to-data tri (point) trigrams)))
           (forward-char))))
-    trigrams))
 
-(setq test-data (sort (codesearch-get-trigrams "/home/david/emacs-stuff/codesearch.el/codesearch.el")
-                      (lambda (a b) (string< (car a) (car b)))))
-(pp test-data)
+    (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
 
-(defun codesearch-search (query trigrams)
+    (let ((trigram-strings (vconcat (mapcar 'car trigrams)))
+          (trigram-indices (vconcat (mapcar 'cdr trigrams))))
+      (list trigram-strings trigram-indices))))
+
+(setq test-data (codesearch-get-trigrams "/home/david/emacs-stuff/codesearch.el/codesearch.el"))
+(pp (test-data))
+
+(defun codesearch-search (query data)
   (defun split-query (query)
     (let ((l (length query))
           (res nil))
@@ -33,23 +37,28 @@
                           res))))))
 
   (let* ((tri-queries (split-query query))
-         (queries-res (seq-reduce (lambda (acc q) (let ((offset (cdr q))
-                                                        (q-tri (seq-find (lambda (tri) (string= (car tri) (car q))) trigrams)))
-                                                    (cons (cons (car q-tri) (mapcar (lambda (x) (- x offset))
-                                                                                    (cdr q-tri)))
-                                                          acc)))
-                                  tri-queries
-                                  nil)))
-    (if (= (length queries-res) 1)
-        queries-res
-      (let ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y))))))
-        (seq-reduce (lambda (acc x) (if (seq-every-p (lambda (rest-el) (seq-find (lambda (y) (= x y))
-                                                                                 (cdr rest-el)))
-                                                     (cdr sorted-queries-res))
-                                        (cons x acc)
-                                      acc))
-                    (cdr (car sorted-queries-res))
-                    nil)))))
+         (data-trigrams (elt data 0))
+         (data-indices (elt data 1))
+         (queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-queries)))
 
-(pp (codesearch-search "string" test-data))
+    (if (seq-some 'not queries-indices)
+        nil
+      (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
+                                                           (mapcar (lambda (x) (- x offset))
+                                                                   (elt data-indices index))))
+                                   tri-queries
+                                   queries-indices)))
+        (if (= (length queries-res) 1)
+            queries-res
+          (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
+                 (smallest-q-res (car sorted-queries-res)))
+            (seq-reduce (lambda (acc smallest-q-index)
+                          (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
+                                                                     q-res))
+                                           (cdr sorted-queries-res))
+                              (cons smallest-q-index acc)
+                            acc))
+                        smallest-q-res
+                        nil)))))))
 
+(pp (codesearch-search "string" (codesearch-get-trigrams (buffer-file-name (current-buffer)))))
