@@ -14,12 +14,12 @@
   
   (let ((trigrams '()))
     (with-temp-buffer
-      (insert-file-contents-literally filepath)
+      (insert-file-contents filepath)
       (let ((max (- (point-max) 3)))
-        (while (< (point) max)
-          (let ((tri (buffer-substring (point) (+ (point) 3))))
-            (setq trigrams (add-to-data tri (point) trigrams)))
-          (forward-char))))
+        (dotimes (i max)
+          (let* ((pos (+ i 1))
+                 (tri (buffer-substring pos (+ pos 3))))
+            (setq trigrams (add-to-data tri pos trigrams))))))
 
     (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
 
@@ -62,10 +62,12 @@
                                                                                      (elt data-indices index))))
                                                      tri-query
                                                      queries-indices)))
+                          ;; queries-res not of correct length, expect 4 get 1...
                           (if (= (length queries-res) 1)
                               queries-res
                             (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
                                    (smallest-q-res (car sorted-queries-res)))
+                              (debug)
                               (seq-reduce (lambda (acc smallest-q-index)
                                             (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
                                                                                        q-res))
@@ -100,22 +102,22 @@
 
 (define-derived-mode codesearch-results-mode tabulated-list-mode "codesearch-results mode"
   "Major mode browsing codesearch query results"
-  (let* ((file (car codesearch-query-result))
-         (results (apply 'append (cdr codesearch-query-result)))
-         (max-filename-width (+ (length file) 5)))
-    (setq tabulated-list-format (vector (list "file"  max-filename-width t)
-                                        (list "text"    100 t)))
-
+  (let* ((filepath (car codesearch-query-result))
+         (filename (file-name-nondirectory filepath))
+         (results (sort (apply 'append (cdr codesearch-query-result)) '<))
+         (max-filename-width (+ (length filename) 5)))
+    (setq tabulated-list-format (vector (list "file" max-filename-width (lambda (x y) (< (car x) (car y))))
+                                        (list "matching line" 100 t)))
     (let ((entries (with-temp-buffer
-                     (insert-file-contents-literally file)
+                     (insert-file-contents-literally filepath)
                      (let ((lines (mapcar (lambda (pos) (line-number-at-pos pos t)) results)))
                        (seq-mapn (lambda (pos line)
                                    (goto-char pos)
                                    (let ((line-start (line-beginning-position))
                                          (line-end (line-end-position)))
-                                     (list pos (vector (format "%s:%d" file line)
+                                     (list pos (vector (format "%s:%d" filename line)
                                                        (buffer-substring line-start line-end)
-                                                       file
+                                                       filepath
                                                        pos))))
                                  results
                                  lines)))))
@@ -127,6 +129,7 @@
                    (set-keymap-parent map tabulated-list-mode-map)
                                         ;(define-key map (kbd "s") 'ide-browser-change-sort-key)
                    (define-key map (kbd "<return>") 'codesearch-result-find-file)
+                   (define-key map (kbd "t") (lambda () (interactive) (pp (tabulated-list-get-entry))))
                    map)))
 
 (defvar codesearch-global-data nil)
