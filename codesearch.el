@@ -61,9 +61,10 @@
                                                       res))))))
             (split-string query " *| *" t " *")))
 
-  (let* ((tri-queries (split-query query))
+  (let* ((tri-queries (split-query (if is-case-sensitive? query (downcase query))))
          (data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
          (data-indices (if is-case-sensitive? (codesearch-result-indices data) (codesearch-result-smallcase-indices data)))
+         ;; todo: for queries with less than 3 chars, fetch all the match-string trigrams and replace the query with those
          (results
           (mapcar (lambda (tri-query)
                     (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
@@ -75,7 +76,7 @@
                                                      tri-query
                                                      queries-indices)))
                           (if (= (length queries-res) 1)
-                              queries-res
+                              (car queries-res)
                             (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
                                    (smallest-q-res (car sorted-queries-res)))
                               (seq-reduce (lambda (acc smallest-q-index)
