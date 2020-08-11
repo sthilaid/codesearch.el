@@ -2,7 +2,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
 
-(cl-defstruct codesearch-result filepath trigrams smallcase-trigrams indices)
+(cl-defstruct codesearch-result filepath trigrams indices smallcase-trigrams smallcase-indices)
 
 (defun codesearch-get-trigrams (filepath)
   (defun add-to-data (tri pos datas)
@@ -11,6 +11,13 @@
       (if data (progn (setcdr data (cons pos (cdr data)))
                       datas)
         (cons (list tri pos) datas))))
+
+  (defun add-list-to-data (tri pos-list datas)
+    (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
+                          datas)))
+      (if data (progn (setcdr data (append pos-list (cdr data)))
+                      datas)
+        (cons (cons tri pos-list) datas))))
   
   (let ((trigrams '()))
     (with-temp-buffer
@@ -24,12 +31,17 @@
     (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
 
     (let* ((trigram-strings (vconcat (mapcar 'car trigrams)))
-           (trigrams-smallcase-strings (vconcat (mapcar (lambda (tri) (downcase tri)) trigram-strings)))
-           (trigram-indices (vconcat (mapcar 'cdr trigrams))))
+           (trigram-indices (vconcat (mapcar 'cdr trigrams)))
+           (smallcase-trigrams (let ((smallcase-datas '()))
+                                 (dolist (tri-data trigrams smallcase-datas)
+                                   (setq smallcase-datas (add-list-to-data (downcase (car tri-data)) (cdr tri-data) smallcase-datas)))))
+           (trigrams-smallcase-strings (vconcat (mapcar 'car smallcase-trigrams)))
+           (trigrams-smallcase-indices (vconcat (mapcar 'cdr smallcase-trigrams))))
       (make-codesearch-result :filepath filepath
                               :trigrams trigram-strings
+                              :indices trigram-indices
                               :smallcase-trigrams trigrams-smallcase-strings
-                              :indices trigram-indices))))
+                              :smallcase-indices trigrams-smallcase-indices))))
 
 (setq TEST-DATA (codesearch-get-trigrams (buffer-file-name (current-buffer))))
 (pp TEST-DATA)
@@ -51,7 +63,7 @@
 
   (let* ((tri-queries (split-query query))
          (data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
-         (data-indices (codesearch-result-indices data))
+         (data-indices (if is-case-sensitive? (codesearch-result-indices data) (codesearch-result-smallcase-indices data)))
          (results
           (mapcar (lambda (tri-query)
                     (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
@@ -62,12 +74,10 @@
                                                                                      (elt data-indices index))))
                                                      tri-query
                                                      queries-indices)))
-                          ;; queries-res not of correct length, expect 4 get 1...
                           (if (= (length queries-res) 1)
                               queries-res
                             (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
                                    (smallest-q-res (car sorted-queries-res)))
-                              (debug)
                               (seq-reduce (lambda (acc smallest-q-index)
                                             (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
                                                                                        q-res))
@@ -104,23 +114,22 @@
   "Major mode browsing codesearch query results"
   (let* ((filepath (car codesearch-query-result))
          (filename (file-name-nondirectory filepath))
-         (results (sort (apply 'append (cdr codesearch-query-result)) '<))
+         (results (sort (seq-uniq (apply 'append (cdr codesearch-query-result))) '<))
          (max-filename-width (+ (length filename) 5)))
     (setq tabulated-list-format (vector (list "file" max-filename-width (lambda (x y) (< (car x) (car y))))
                                         (list "matching line" 100 t)))
     (let ((entries (with-temp-buffer
-                     (insert-file-contents-literally filepath)
-                     (let ((lines (mapcar (lambda (pos) (line-number-at-pos pos t)) results)))
-                       (seq-mapn (lambda (pos line)
-                                   (goto-char pos)
-                                   (let ((line-start (line-beginning-position))
-                                         (line-end (line-end-position)))
-                                     (list pos (vector (format "%s:%d" filename line)
-                                                       (buffer-substring line-start line-end)
-                                                       filepath
-                                                       pos))))
-                                 results
-                                 lines)))))
+                     (insert-file-contents filepath)
+                     (seq-map (lambda (pos)
+                                (goto-char pos)
+                                (let ((line-num (line-number-at-pos pos))
+                                      (line-start (line-beginning-position))
+                                      (line-end (line-end-position)))
+                                  (list pos (vector (format "%s:%d" filename line-num)
+                                                    (buffer-substring line-start line-end)
+                                                    filepath
+                                                    pos))))
+                              results))))
       (setq tabulated-list-entries entries))
     (setq tabulated-list-sort-key (cons "file" nil)))
     
@@ -138,16 +147,17 @@
   (interactive "f")
   (setq codesearch-global-data (codesearch-get-trigrams file)))
 
-(defun codesearch (query)
+(defun codesearch (query is-case-sensitive?)
   "Browse results of codesearch query"
   (interactive (let ((word (codesearch-current-word-or-region)))
                  (list (read-string (concat "Codesearch exp (default: \"" word "\"): ")
-                                    nil 'codesearch-history))))
+                                    nil 'codesearch-history)
+                       (y-or-n-p "case sensitive search?"))))
 
   ;; todo: check that codesearch-global-data is valid
   
   (with-current-buffer (get-buffer-create "*codesearch-results*")
-    (let ((codesearch-query-result (codesearch-search query codesearch-global-data)))
+    (let ((codesearch-query-result (codesearch-search query codesearch-global-data is-case-sensitive?)))
       (codesearch-results-mode))
     (tabulated-list-print)
     (switch-to-buffer (current-buffer))))
