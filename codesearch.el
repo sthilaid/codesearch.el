@@ -59,7 +59,7 @@
                                       (setq res (cons (cons (substring sub-query index (+ index 3))
                                                             index)
                                                       res))))))
-            (split-string query " *| *" t " *")))
+            (split-string query " *| *" t)))
 
   (let* ((tri-queries (split-query (if is-case-sensitive? query (downcase query))))
          (data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
@@ -111,6 +111,11 @@
                (find-file (elt entry 2))
                (goto-char (elt entry 3))))))
 
+(defvar codesearch-result-highlight-face 'codesearch-result-highlight-face)
+(defface codesearch-result-highlight-face
+  `((t :weight bold :slant italic :background ,(face-foreground 'default) :foreground ,(face-background 'default)))
+  "Used to highlight codesearch results")
+
 (define-derived-mode codesearch-results-mode tabulated-list-mode "codesearch-results mode"
   "Major mode browsing codesearch query results"
   (let* ((filepath (car codesearch-query-result))
@@ -135,9 +140,10 @@
     (setq tabulated-list-sort-key (cons "file" nil)))
     
   (tabulated-list-init-header)
+  (setq codesearch-font-lock-defaults `((,query . codesearch-result-highlight-face)))
+  (setq font-lock-defaults '(codesearch-font-lock-defaults))
   (use-local-map (let ((map (make-sparse-keymap)))
                    (set-keymap-parent map tabulated-list-mode-map)
-                                        ;(define-key map (kbd "s") 'ide-browser-change-sort-key)
                    (define-key map (kbd "<return>") 'codesearch-result-find-file)
                    (define-key map (kbd "t") (lambda () (interactive) (pp (tabulated-list-get-entry))))
                    map)))
