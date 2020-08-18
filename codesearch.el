@@ -34,7 +34,8 @@
            (trigram-indices (vconcat (mapcar 'cdr trigrams)))
            (smallcase-trigrams (let ((smallcase-datas '()))
                                  (dolist (tri-data trigrams smallcase-datas)
-                                   (setq smallcase-datas (add-list-to-data (downcase (car tri-data)) (cdr tri-data) smallcase-datas)))))
+                                   (setq smallcase-datas (add-list-to-data (downcase (car tri-data))
+                                                                           (cdr tri-data) smallcase-datas)))))
            (trigrams-smallcase-strings (vconcat (mapcar 'car smallcase-trigrams)))
            (trigrams-smallcase-indices (vconcat (mapcar 'cdr smallcase-trigrams))))
       (make-codesearch-result :filepath filepath
@@ -50,21 +51,28 @@
 ;; perform a search query in the data and return results
 
 (defun codesearch-search (query data &optional is-case-sensitive?)
-  (defun split-query (query)
-    (mapcar (lambda (sub-query) (let ((l (length sub-query))
-                                      (res nil))
-                                  (if (< l 3)
-                                      (list (cons sub-query 0))
-                                    (dotimes (index (- l 2) res)
-                                      (setq res (cons (cons (substring sub-query index (+ index 3))
-                                                            index)
-                                                      res))))))
-            (split-string query " *| *" t)))
+  (defun split-query (query trigrams)
+    (let ((split-queries (mapcar (lambda (sub-query) (let ((l (length sub-query))
+                                                           (res nil))
+                                                       (if (< l 3)
+                                                           sub-query ;; processed after the fact (OR statements)
+                                                         (dotimes (index (- l 2) res)
+                                                           (setq res (cons (cons (substring sub-query index (+ index 3))
+                                                                                 index)
+                                                                           res))))))
+                                 (split-string query " *| *" t))))
+      (seq-reduce (lambda (acc q) (if (not (stringp q))
+                                      (cons q acc)
+                                    (seq-reduce (lambda (acc tri) (let ((pos (string-match q tri)))
+                                                                    (if pos (cons (list (cons tri pos)) acc) acc)))
+                                                trigrams
+                                                acc)))
+                  split-queries
+                  '())))
 
-  (let* ((tri-queries (split-query (if is-case-sensitive? query (downcase query))))
-         (data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
+  (let* ((data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
          (data-indices (if is-case-sensitive? (codesearch-result-indices data) (codesearch-result-smallcase-indices data)))
-         ;; todo: for queries with less than 3 chars, fetch all the match-string trigrams and replace the query with those
+         (tri-queries (split-query (if is-case-sensitive? query (downcase query)) data-trigrams))
          (results
           (mapcar (lambda (tri-query)
                     (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
@@ -88,7 +96,7 @@
                                           smallest-q-res
                                           nil)))))))
                   tri-queries)))
-    (if (> (length results) 0)
+    (if (and (> (length results) 0) (seq-some (lambda (x) x) results))
         (cons (codesearch-result-filepath data) results)
       nil)))
 
