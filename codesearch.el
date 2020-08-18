@@ -2,15 +2,15 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
 
-(cl-defstruct codesearch-result filepath trigrams indices smallcase-trigrams smallcase-indices)
+(cl-defstruct codesearch-result files trigrams indices smallcase-trigrams smallcase-indices)
 
-(defun codesearch-get-trigrams (filepath)
-  (defun add-to-data (tri pos datas)
+(defun codesearch-get-trigrams (filepaths)
+  (defun add-to-data (tri pos file-index datas)
     (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
                           datas)))
-      (if data (progn (setcdr data (cons pos (cdr data)))
+      (if data (progn (setcdr data (cons (cons file-index pos) (cdr data)))
                       datas)
-        (cons (list tri pos) datas))))
+        (cons (list tri (cons file-index pos)) datas))))
 
   (defun add-list-to-data (tri pos-list datas)
     (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
@@ -20,32 +20,33 @@
         (cons (cons tri pos-list) datas))))
   
   (let ((trigrams '()))
-    (with-temp-buffer
-      (insert-file-contents filepath)
-      (let ((max (- (point-max) 3)))
-        (dotimes (i max)
-          (let* ((pos (+ i 1))
-                 (tri (buffer-substring pos (+ pos 3))))
-            (setq trigrams (add-to-data tri pos trigrams))))))
-
+    (dotimes (file-index (length filepaths))
+      (let ((filepath (elt filepaths file-index)))
+        (message (format "generating index for file %s..." filepath))
+        (with-temp-buffer
+          (insert-file-contents filepath)
+          (let ((max (- (point-max) 3)))
+            (dotimes (i max)
+              (let* ((pos (+ i 1))
+                     (tri (buffer-substring pos (+ pos 3))))
+                (setq trigrams (add-to-data tri pos file-index trigrams))))))))
     (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
-
     (let* ((trigram-strings (vconcat (mapcar 'car trigrams)))
-           (trigram-indices (vconcat (mapcar 'cdr trigrams)))
-           (smallcase-trigrams (let ((smallcase-datas '()))
-                                 (dolist (tri-data trigrams smallcase-datas)
-                                   (setq smallcase-datas (add-list-to-data (downcase (car tri-data))
-                                                                           (cdr tri-data) smallcase-datas)))))
-           (trigrams-smallcase-strings (vconcat (mapcar 'car smallcase-trigrams)))
-           (trigrams-smallcase-indices (vconcat (mapcar 'cdr smallcase-trigrams))))
-      (make-codesearch-result :filepath filepath
-                              :trigrams trigram-strings
-                              :indices trigram-indices
-                              :smallcase-trigrams trigrams-smallcase-strings
-                              :smallcase-indices trigrams-smallcase-indices))))
+         (trigram-indices (vconcat (mapcar 'cdr trigrams)))
+         (smallcase-trigrams (let ((smallcase-datas '()))
+                               (dolist (tri-data trigrams smallcase-datas)
+                                 (setq smallcase-datas (add-list-to-data (downcase (car tri-data))
+                                                                         (cdr tri-data) smallcase-datas)))))
+         (trigrams-smallcase-strings (vconcat (mapcar 'car smallcase-trigrams)))
+         (trigrams-smallcase-indices (vconcat (mapcar 'cdr smallcase-trigrams))))
+    (make-codesearch-result :files      filepaths
+                            :trigrams   trigram-strings
+                            :indices    trigram-indices
+                            :smallcase-trigrams trigrams-smallcase-strings
+                            :smallcase-indices  trigrams-smallcase-indices))))
 
-(setq TEST-DATA (codesearch-get-trigrams (buffer-file-name (current-buffer))))
-(pp TEST-DATA)
+(setq TEST-DATA (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))))
+;; (pp TEST-DATA)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; perform a search query in the data and return results
@@ -79,7 +80,7 @@
                       (if (seq-some 'not queries-indices)
                           nil
                         (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
-                                                                             (mapcar (lambda (x) (- x offset))
+                                                                             (mapcar (lambda (x) (cons (car x) (- (cdr x) offset)))
                                                                                      (elt data-indices index))))
                                                      tri-query
                                                      queries-indices)))
@@ -88,8 +89,13 @@
                             (let* ((sorted-queries-res (sort queries-res (lambda (x y) (< (length x) (length y)))))
                                    (smallest-q-res (car sorted-queries-res)))
                               (seq-reduce (lambda (acc smallest-q-index)
-                                            (if (seq-every-p (lambda (q-res) (seq-find (lambda (index) (= smallest-q-index index))
-                                                                                       q-res))
+                                            (if (seq-every-p (lambda (q-res)
+                                                               ;; if file-index and pos match for every AND queries
+                                                               (seq-find (lambda (index) (and (= (car smallest-q-index)
+                                                                                                 (car index))
+                                                                                              (= (cdr smallest-q-index)
+                                                                                                 (cdr index))))
+                                                                         q-res))
                                                              (cdr sorted-queries-res))
                                                 (cons smallest-q-index acc)
                                               acc))
@@ -97,10 +103,10 @@
                                           nil)))))))
                   tri-queries)))
     (if (and (> (length results) 0) (seq-some (lambda (x) x) results))
-        (cons (codesearch-result-filepath data) results)
+        results
       nil)))
 
-(pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
+;; (pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; interactive search and results presentation
@@ -126,24 +132,35 @@
 
 (define-derived-mode codesearch-results-mode tabulated-list-mode "codesearch-results mode"
   "Major mode browsing codesearch query results"
-  (let* ((filepath (car codesearch-query-result))
-         (filename (file-name-nondirectory filepath))
-         (results (sort (seq-uniq (apply 'append (cdr codesearch-query-result))) '<))
-         (max-filename-width (+ (length filename) 5)))
+  (let* ((results (sort (seq-uniq (apply 'append codesearch-query-result)
+                                  (lambda (x y) (and (= (car x) (car y))
+                                                     (= (cdr x) (cdr y)))))
+                        (lambda (x y) (if (= (car x) (car y))
+                                          (< (cdr x) (cdr y))
+                                        (< (car x) (car y))))))
+         (max-filename-width (+ (seq-reduce (lambda (acc x) (let* ((f (elt (codesearch-result-files codesearch-global-data) (car x)))
+                                                                   (width (length f)))
+                                                              (if (> width acc) width acc)))
+                                            results
+                                            0)
+                                5)))
     (setq tabulated-list-format (vector (list "file" max-filename-width (lambda (x y) (< (car x) (car y))))
                                         (list "matching line" 100 t)))
-    (let ((entries (with-temp-buffer
-                     (insert-file-contents filepath)
-                     (seq-map (lambda (pos)
-                                (goto-char pos)
-                                (let ((line-num (line-number-at-pos pos))
-                                      (line-start (line-beginning-position))
-                                      (line-end (line-end-position)))
-                                  (list pos (vector (format "%s:%d" filename line-num)
-                                                    (buffer-substring line-start line-end)
-                                                    filepath
-                                                    pos))))
-                              results))))
+    (let ((entries (seq-map (lambda (result)
+                              (let* ((filepath (elt (codesearch-result-files codesearch-global-data) (car result)))
+                                     (filename (file-name-nondirectory filepath))
+                                     (pos (cdr result)))
+                                (with-temp-buffer filepath
+                                                  (insert-file-contents filepath)
+                                                  (goto-char pos)
+                                                  (let ((line-num (line-number-at-pos pos))
+                                                        (line-start (line-beginning-position))
+                                                        (line-end (line-end-position)))
+                                                    (list pos (vector (format "%s:%d" filename line-num)
+                                                                      (buffer-substring line-start line-end)
+                                                                      filepath
+                                                                      pos))))))
+                            results)))
       (setq tabulated-list-entries entries))
     (setq tabulated-list-sort-key (cons "file" nil)))
     
@@ -158,9 +175,13 @@
 
 (defvar codesearch-global-data nil)
 
-(defun codesearch-genindex (file)
+(defun codesearch-genindex-from-file (file)
   (interactive "f")
-  (setq codesearch-global-data (codesearch-get-trigrams file)))
+  (setq codesearch-global-data (codesearch-get-trigrams (list file))))
+
+(defun codesearch-genindex-from-dir (filepaths)
+  (interactive "Xfile expression:")
+  (setq codesearch-global-data (codesearch-get-trigrams filepaths)))
 
 (defun codesearch (query is-case-sensitive?)
   "Browse results of codesearch query"
