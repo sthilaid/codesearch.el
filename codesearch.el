@@ -1,25 +1,35 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; data structures 
+
+(require 'avl-tree)
+
+(cl-defstruct codesearch-genleaf tri positions)
+(cl-defstruct codesearch-result files trigrams smallcase-trigrams)
+(defun codesearch-result-get-indices (trigrams tri)
+  (let ((data (avl-tree-member trigrams
+                               (make-codesearch-genleaf :tri tri))))
+    (if data (codesearch-genleaf-positions data) nil)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
 
-(cl-defstruct codesearch-result files trigrams indices smallcase-trigrams smallcase-indices)
-
 (defun codesearch-get-trigrams (filepaths)
-  (defun add-to-data (tri pos file-index datas)
-    (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
-                          datas)))
-      (if data (progn (setcdr data (cons (cons file-index pos) (cdr data)))
-                      datas)
-        (cons (list tri (cons file-index pos)) datas))))
+  (defun add-to-data (datas tri pos file-index)
+    (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
+      (if data
+          (setf (codesearch-genleaf-positions data) (cons (cons file-index pos)
+                                                          (codesearch-genleaf-positions data)))
+        (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions (list (cons file-index pos)))))))
 
-  (defun add-list-to-data (tri pos-list datas)
-    (let ((data (seq-find (lambda (data) (string= (elt data 0) tri))
-                          datas)))
-      (if data (progn (setcdr data (append pos-list (cdr data)))
-                      datas)
-        (cons (cons tri pos-list) datas))))
+  (defun add-list-to-data (datas tri pos-list)
+    (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
+      (if data
+          (setf (codesearch-genleaf-positions data) (append pos-list
+                                                            (codesearch-genleaf-positions data)))
+        (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions pos-list)))))
   
-  (let ((trigrams '()))
+  (let ((trigrams (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
+                                                          (codesearch-genleaf-tri y))))))
     (dotimes (file-index (length filepaths))
       (let ((filepath (elt filepaths file-index)))
         (message (format "generating index for file %s..." filepath))
@@ -29,23 +39,19 @@
             (dotimes (i max)
               (let* ((pos (+ i 1))
                      (tri (buffer-substring pos (+ pos 3))))
-                (setq trigrams (add-to-data tri pos file-index trigrams))))))))
-    (setq trigrams (sort trigrams (lambda (a b) (string< (car a) (car b)))))
-    (let* ((trigram-strings (vconcat (mapcar 'car trigrams)))
-         (trigram-indices (vconcat (mapcar 'cdr trigrams)))
-         (smallcase-trigrams (let ((smallcase-datas '()))
-                               (dolist (tri-data trigrams smallcase-datas)
-                                 (setq smallcase-datas (add-list-to-data (downcase (car tri-data))
-                                                                         (cdr tri-data) smallcase-datas)))))
-         (trigrams-smallcase-strings (vconcat (mapcar 'car smallcase-trigrams)))
-         (trigrams-smallcase-indices (vconcat (mapcar 'cdr smallcase-trigrams))))
-    (make-codesearch-result :files      filepaths
-                            :trigrams   trigram-strings
-                            :indices    trigram-indices
-                            :smallcase-trigrams trigrams-smallcase-strings
-                            :smallcase-indices  trigrams-smallcase-indices))))
+                (add-to-data trigrams tri pos file-index)))))))
+    (let* ((smallcase-trigrams (let ((smallcase-datas (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
+                                                                                              (codesearch-genleaf-tri y))))))
+                                 (avl-tree-mapc (lambda (node) (add-list-to-data smallcase-datas
+                                                                                 (downcase (codesearch-genleaf-tri node))
+                                                                                 (codesearch-genleaf-positions node)))
+                                                trigrams)
+                                 smallcase-datas)))
+      (make-codesearch-result :files      filepaths
+                              :trigrams   trigrams
+                              :smallcase-trigrams smallcase-trigrams))))
 
-(setq TEST-DATA (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))))
+;; (setq TEST-DATA (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))))
 ;; (pp TEST-DATA)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -72,16 +78,17 @@
                   '())))
 
   (let* ((data-trigrams (if is-case-sensitive? (codesearch-result-trigrams data) (codesearch-result-smallcase-trigrams data)))
-         (data-indices (if is-case-sensitive? (codesearch-result-indices data) (codesearch-result-smallcase-indices data)))
          (tri-queries (split-query (if is-case-sensitive? query (downcase query)) data-trigrams))
          (results
           (mapcar (lambda (tri-query)
-                    (let ((queries-indices (mapcar (lambda (tri-q) (seq-position data-trigrams (car tri-q))) tri-query)))
+                    (let ((queries-indices (mapcar (lambda (tri-q) (vconcat (codesearch-result-get-indices data-trigrams (car tri-q))))
+                                                   tri-query)))
                       (if (seq-some 'not queries-indices)
                           nil
-                        (let ((queries-res (seq-mapn (lambda (tri-q index) (let ((offset (cdr tri-q)))
-                                                                             (mapcar (lambda (x) (cons (car x) (- (cdr x) offset)))
-                                                                                     (elt data-indices index))))
+                        (let ((queries-res (seq-mapn (lambda (tri-q index)
+                                                       (let ((offset (cdr tri-q)))
+                                                         (mapcar (lambda (x) (cons (car x) (- (cdr x) offset)))
+                                                                 (codesearch-result-get-indices data-trigrams (car tri-q)))))
                                                      tri-query
                                                      queries-indices)))
                           (if (= (length queries-res) 1)
@@ -106,7 +113,7 @@
         results
       nil)))
 
-;; (pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (buffer-file-name (current-buffer))) t))
+;;(pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))) t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; interactive search and results presentation
@@ -185,11 +192,12 @@
 
 (defun codesearch (query is-case-sensitive?)
   "Browse results of codesearch query"
-  (interactive (let ((word (codesearch-current-word-or-region)))
-                 (list (read-string (concat "Codesearch exp (default: \"" word "\"): ")
-                                    nil 'codesearch-history)
+  (interactive (let* ((word (codesearch-current-word-or-region))
+                      (input (read-string (concat "Codesearch exp (default: \"" word "\"): ")
+                                          nil 'codesearch-history)))
+                 (list (if (string= "" input) word input)
                        (y-or-n-p "case sensitive search?"))))
-
+  (message (concat "test " query))
   ;; todo: check that codesearch-global-data is valid
   
   (with-current-buffer (get-buffer-create "*codesearch-results*")
@@ -197,3 +205,5 @@
       (codesearch-results-mode))
     (tabulated-list-print)
     (switch-to-buffer (current-buffer))))
+
+(provide 'codesearch)
