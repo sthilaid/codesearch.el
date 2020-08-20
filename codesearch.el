@@ -13,7 +13,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
 
-(defun codesearch-get-trigrams (filepaths)
+(defun codesearch-update-trigrams (filepaths &optional trigrams-data)
   (defun add-to-data (datas tri pos file-index)
     (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
       (if data
@@ -27,31 +27,70 @@
           (setf (codesearch-genleaf-positions data) (append pos-list
                                                             (codesearch-genleaf-positions data)))
         (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions pos-list)))))
-  
-  (let ((trigrams (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
-                                                          (codesearch-genleaf-tri y))))))
-    (dotimes (file-index (length filepaths))
-      (let ((filepath (elt filepaths file-index)))
-        (message (format "generating index for file %s..." filepath))
-        (with-temp-buffer
-          (insert-file-contents filepath)
-          (let ((max (- (point-max) 3)))
-            (dotimes (i max)
-              (let* ((pos (+ i 1))
-                     (tri (buffer-substring pos (+ pos 3))))
-                (add-to-data trigrams tri pos file-index)))))))
-    (let* ((smallcase-trigrams (let ((smallcase-datas (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
-                                                                                              (codesearch-genleaf-tri y))))))
-                                 (avl-tree-mapc (lambda (node) (add-list-to-data smallcase-datas
-                                                                                 (downcase (codesearch-genleaf-tri node))
-                                                                                 (codesearch-genleaf-positions node)))
-                                                trigrams)
-                                 smallcase-datas)))
-      (make-codesearch-result :files      filepaths
-                              :trigrams   trigrams
-                              :smallcase-trigrams smallcase-trigrams))))
 
-;; (setq TEST-DATA (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))))
+  (defun purge-stale-data (trigrams)
+    (let* ((datas-files  (codesearch-result-files trigrams-data))
+           (file-indices (seq-reduce (lambda (acc file) (let ((pos (seq-position datas-files file 'string=)))
+                                                          (if pos (cons pos acc) acc)))
+                                     filepaths
+                                     '())))
+      (avl-tree-mapc (lambda (node) (setf (codesearch-genleaf-positions node)
+                                          (seq-filter (lambda (x) (not (seq-contains file-indices (car x))))
+                                                      (codesearch-genleaf-positions node))))
+                     trigrams)))
+
+  (let* ((new-trigrams
+          (if (codesearch-result-p trigrams-data)
+              (let ((existing-trigrams (codesearch-result-trigrams trigrams-data)))
+                (message (format "purging existing trigrams for reindexed files..."))
+                (purge-stale-data existing-trigrams)
+                existing-trigrams)
+            (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
+                                                    (codesearch-genleaf-tri y))))))
+         (all-filepaths (if (codesearch-result-p trigrams-data)
+                            (codesearch-result-files trigrams-data)
+                          '()))
+         (file-index-offset (length all-filepaths)))
+
+    (let ((filepaths-count (length filepaths)))
+     (dotimes (i filepaths-count)
+       (let* ((filepath (elt filepaths i))
+              (file-index (let ((index (seq-position all-filepaths filepath 'string=)))
+                            (if index
+                                index
+                              (progn (setq all-filepaths (append all-filepaths (list filepath)))
+                                     (- (length all-filepaths) 1))))))
+         (message (format "generating index for file %s [%d/%d]..." filepath i filepaths-count))
+         (with-temp-buffer
+           (insert-file-contents filepath)
+           (let ((max (- (point-max) 3)))
+             (dotimes (i max)
+               (let* ((pos (+ i 1))
+                      (tri (buffer-substring pos (+ pos 3))))
+                 (add-to-data new-trigrams tri pos file-index))))))))
+    
+    (let* ((smallcase-new-trigrams
+            (let ((smallcase-datas (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
+                                                                           (codesearch-genleaf-tri y))))))
+              (avl-tree-mapc (lambda (node) (add-list-to-data smallcase-datas
+                                                              (downcase (codesearch-genleaf-tri node))
+                                                              (codesearch-genleaf-positions node)))
+                             new-trigrams)
+              smallcase-datas)))
+      (prog1
+          (if (codesearch-result-p trigrams-data)
+              (progn
+                (setf (codesearch-result-files trigrams-data)
+                      all-filepaths)
+                (setf (codesearch-result-smallcase-trigrams trigrams-data)
+                      smallcase-new-trigrams )
+                trigrams-data)
+            (make-codesearch-result :files      filepaths
+                                    :trigrams   new-trigrams
+                                    :smallcase-trigrams smallcase-new-trigrams))
+        (message "done")))))
+
+;; (setq TEST-DATA (codesearch-update-trigrams (list (buffer-file-name (current-buffer)))))
 ;; (pp TEST-DATA)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -113,7 +152,7 @@
         results
       nil)))
 
-;;(pp (codesearch-search "  string|   seq-" (codesearch-get-trigrams (list (buffer-file-name (current-buffer)))) t))
+;;(pp (codesearch-search "  string|   seq-" (codesearch-update-trigrams (list (buffer-file-name (current-buffer)))) t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; interactive search and results presentation
@@ -146,16 +185,21 @@
                                           (< (cdr x) (cdr y))
                                         (< (car x) (car y))))))
          (max-filename-width (+ (seq-reduce (lambda (acc x) (let* ((f (elt (codesearch-result-files codesearch-global-data) (car x)))
-                                                                   (width (length f)))
+                                                                   (display-f (if codesearch-results-show-full-path?
+                                                                                  f
+                                                                                (file-name-nondirectory f)))
+                                                                   (width (length display-f)))
                                                               (if (> width acc) width acc)))
                                             results
                                             0)
                                 5)))
-    (setq tabulated-list-format (vector (list "file" max-filename-width (lambda (x y) (< (car x) (car y))))
+    (setq tabulated-list-format (vector (list "file" max-filename-width (lambda (x y) (string< (elt (cadr x) 0) (elt (cadr y) 0))))
                                         (list "matching line" 100 t)))
     (let ((entries (seq-map (lambda (result)
                               (let* ((filepath (elt (codesearch-result-files codesearch-global-data) (car result)))
-                                     (filename (file-name-nondirectory filepath))
+                                     (filename (if codesearch-results-show-full-path?
+                                                   filepath
+                                                 (file-name-nondirectory filepath)))
                                      (pos (cdr result)))
                                 (with-temp-buffer filepath
                                                   (insert-file-contents filepath)
@@ -172,23 +216,34 @@
     (setq tabulated-list-sort-key (cons "file" nil)))
     
   (tabulated-list-init-header)
-  (setq codesearch-font-lock-defaults `((,query . codesearch-result-highlight-face)))
+  (setq codesearch-font-lock-defaults `((,codesearch-last-query . codesearch-result-highlight-face)))
   (setq font-lock-defaults '(codesearch-font-lock-defaults))
   (use-local-map (let ((map (make-sparse-keymap)))
                    (set-keymap-parent map tabulated-list-mode-map)
                    (define-key map (kbd "<return>") 'codesearch-result-find-file)
                    (define-key map (kbd "t") (lambda () (interactive) (pp (tabulated-list-get-entry))))
+                   (define-key map (kbd "P") (lambda () (interactive) (progn (setq codesearch-results-show-full-path?
+                                                                                   (not codesearch-results-show-full-path?))
+                                                                             (codesearch-results-mode)
+                                                                             (tabulated-list-print))))
                    map)))
 
 (defvar codesearch-global-data nil)
+(defvar codesearch-results-show-full-path? nil)
+(defvar codesearch-query-result nil)
+(defvar codesearch-last-query nil)
 
 (defun codesearch-genindex-from-file (file)
   (interactive "f")
-  (setq codesearch-global-data (codesearch-get-trigrams (list file))))
+  (setq codesearch-global-data (codesearch-update-trigrams (list file) codesearch-global-data)))
 
 (defun codesearch-genindex-from-dir (filepaths)
   (interactive "Xfile expression:")
-  (setq codesearch-global-data (codesearch-get-trigrams filepaths)))
+  (setq codesearch-global-data (codesearch-update-trigrams filepaths codesearch-global-data)))
+
+(defun codesearch-purge ()
+  (interactive)
+  (setq codesearch-global-data nil))
 
 (defun codesearch (query is-case-sensitive?)
   "Browse results of codesearch query"
@@ -197,12 +252,12 @@
                                           nil 'codesearch-history)))
                  (list (if (string= "" input) word input)
                        (y-or-n-p "case sensitive search?"))))
-  (message (concat "test " query))
   ;; todo: check that codesearch-global-data is valid
   
   (with-current-buffer (get-buffer-create "*codesearch-results*")
-    (let ((codesearch-query-result (codesearch-search query codesearch-global-data is-case-sensitive?)))
-      (codesearch-results-mode))
+    (setq codesearch-last-query query)
+    (setq codesearch-query-result (codesearch-search query codesearch-global-data is-case-sensitive?))
+    (codesearch-results-mode)
     (tabulated-list-print)
     (switch-to-buffer (current-buffer))))
 
