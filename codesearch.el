@@ -5,10 +5,15 @@
 
 (cl-defstruct codesearch-genleaf tri positions)
 (cl-defstruct codesearch-data files files-md5 trigrams smallcase-trigrams)
+
 (defun codesearch-data-get-indices (trigrams tri)
   (let ((data (avl-tree-member trigrams
                                (make-codesearch-genleaf :tri tri))))
     (if data (codesearch-genleaf-positions data) nil)))
+
+(defun codesarch-create-trigram-tree ()
+  (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
+                                          (codesearch-genleaf-tri y)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
@@ -31,8 +36,7 @@
 
 (defun codesearch-create-trigrams (all-filepaths new-trigrams trigrams-data)
   (let* ((smallcase-new-trigrams
-          (let ((smallcase-datas (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
-                                                                         (codesearch-genleaf-tri y))))))
+          (let ((smallcase-datas (codesarch-create-trigram-tree)))
             (avl-tree-mapc (lambda (node) (codesearch-add-list-to-data smallcase-datas
                                                                        (downcase (codesearch-genleaf-tri node))
                                                                        (codesearch-genleaf-positions node)))
@@ -62,8 +66,7 @@
     (let* ((new-trigrams
             (if (codesearch-data-p trigrams-data)
                 (codesearch-data-trigrams trigrams-data)
-              (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
-                                                      (codesearch-genleaf-tri y))))))
+              (codesarch-create-trigram-tree)))
            (filepaths-count (length filepaths))
            (intial-filecount (length all-filepaths)))
       (dotimes (i filepaths-count)
@@ -94,6 +97,43 @@
 
 ;; (setq TEST-DATA (codesearch-update-trigrams (list (buffer-file-name (current-buffer)))))
 ;; (pp TEST-DATA)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; index serialization
+
+(defun codesearch-serialize-index (data out-file)
+  (let* ((files (codesearch-data-files data))
+         (files-md5 (codesearch-data-files-md5 data))
+         (trigrams (codesearch-data-trigrams data))
+         (smallcase-trigrams (codesearch-data-smallcase-trigrams data))
+         (raw-data (list files files-md5 (avl-tree-flatten trigrams) (avl-tree-flatten smallcase-trigrams))))
+    (with-temp-file out-file
+        (insert (with-output-to-string (print raw-data))))
+    (message (format "index saved in %s" out-file))))
+
+(defun codesearch-deserialize-index (index-filename)
+  (if (not (file-exists-p index-filename))
+      (error (format "index file %s does not exists... aborting" index-filename)))
+  (with-temp-buffer
+    (insert-file-contents index-filename)
+    (let* ((raw-data-str (buffer-string))
+           (raw-data (read raw-data-str))
+           (files (elt raw-data 0))
+           (files-md5 (elt raw-data 1))
+           (trigrams (elt raw-data 2))
+           (smallcase-trigrams (elt raw-data 3))
+           (data (make-codesearch-data :files files
+                                       :files-md5 files-md5)))
+      (let ((trigram-tree (codesarch-create-trigram-tree)))
+        (dolist (tri-data trigrams)
+          (avl-tree-enter trigram-tree tri-data))
+        (setf (codesearch-data-trigrams data) trigram-tree))
+
+      (let ((smallcase-trigram-tree (codesarch-create-trigram-tree)))
+        (dolist (tri-data smallcase-trigrams)
+          (avl-tree-enter smallcase-trigram-tree tri-data))
+        (setf (codesearch-data-smallcase-trigrams data) smallcase-trigram-tree))
+      data)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; perform a search query in the data and return results
@@ -172,6 +212,11 @@
         (progn (find-file (elt entry 2))
                (goto-char (elt entry 3))))))
 
+(defcustom codesearch-default-index-file "~/.codesearch-index"
+  "File used to store default global index"
+  :type 'string
+  :group 'codesearch)
+
 (defvar codesearch-font-lock-defaults nil)
 (defvar codesearch-global-data nil)
 (defvar codesearch-results-show-full-path? nil)
@@ -236,13 +281,13 @@
                                                                              (tabulated-list-print))))
                    map)))
 
-(defun codesearch-genindex-from-file (file)
+(defun codesearch-index-add-file (file)
   "Generate a trigram search index for the specified file. Can be
 searche with the 'codesearch command."
   (interactive "f")
   (setq codesearch-global-data (codesearch-update-trigrams (list file) codesearch-global-data)))
 
-(defun codesearch-genindex-from-dir (dir regexp)
+(defun codesearch-index-add-dir (dir regexp)
   "Generate a trigram search index for all the mathching files in
 specified directory. Can be searche with the 'codesearch
 command."
@@ -257,10 +302,32 @@ command."
                                        files)))
     (setq codesearch-global-data (codesearch-update-trigrams cleaned-up-files codesearch-global-data))))
 
+(defun codesearch-save-index (&optional index-file)
+  "Saves the current global codesearch index in the provided index file (default location in ~/.codesearch-index)."
+  (interactive (let ((file-input (ido-read-file-name "save to index file: "
+                                                     (file-name-directory codesearch-default-index-file)
+                                                     codesearch-default-index-file
+                                                     nil
+                                                     (file-name-nondirectory codesearch-default-index-file))))
+                 (list file-input)))
+  (codesearch-serialize-index codesearch-global-data index-file))
+
+(defun codesearch-load-index (&optional index-file)
+  "Loads the current global codesearch index from the provided index file (default location in ~/.codesearch-index)."
+  (interactive (let ((file-input (ido-read-file-name "load index file: "
+                                                     (file-name-directory codesearch-default-index-file)
+                                                     codesearch-default-index-file
+                                                     nil
+                                                     (file-name-nondirectory codesearch-default-index-file))))
+                 (list file-input)))
+  (setq codesearch-global-data (codesearch-deserialize-index index-file))
+  (message (format "index loaded from %s" index-file)))
+
 (defun codesearch-reset-index ()
   "Clears completely currently active codesearch index."
   (interactive)
-  (setq codesearch-global-data nil))
+  (setq codesearch-global-data nil)
+  (message "current index was reset successfully"))
 
 (defun codesearch-cleanup-data (&optional data)
   "Removes all stale data in the current codesearch index. Will
@@ -303,8 +370,7 @@ regenerate all the data so it will take some time."
 
 (defun codesearch (query is-case-sensitive?)
   "Perform and browse results of codesearch query. Requires that
-a codesearch index is loaded in memory through the use of
-codesearch-genindex-from-(file|dir) commands."
+a codesearch index is loaded in memory."
   (interactive (let* ((word (codesearch-current-word-or-region))
                       (input (read-string (concat "Codesearch exp (default: \"" word "\"): ")
                                           nil 'codesearch-history)))
