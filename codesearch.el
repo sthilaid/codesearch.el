@@ -84,6 +84,7 @@
               (dotimes (i max)
                 (let* ((pos (+ i 1))
                        (tri (buffer-substring pos (+ pos 3))))
+                  ;; todo: ignore trigrams with spaces and tabs?
                   (codesearch-add-to-data new-trigrams tri pos file-index)))))))
       (prog1 (codesearch-create-trigrams all-filepaths new-trigrams trigrams-data)
         (message (format "done in %.2f secs%s"
@@ -302,7 +303,7 @@ command."
                                        files)))
     (setq codesearch-global-data (codesearch-update-trigrams cleaned-up-files codesearch-global-data))))
 
-(defun codesearch-save-index (&optional index-file)
+(defun codesearch-index-save (&optional index-file)
   "Saves the current global codesearch index in the provided index file (default location in ~/.codesearch-index)."
   (interactive (let ((file-input (ido-read-file-name "save to index file: "
                                                      (file-name-directory codesearch-default-index-file)
@@ -312,7 +313,7 @@ command."
                  (list file-input)))
   (codesearch-serialize-index codesearch-global-data index-file))
 
-(defun codesearch-load-index (&optional index-file)
+(defun codesearch-index-load (&optional index-file)
   "Loads the current global codesearch index from the provided index file (default location in ~/.codesearch-index)."
   (interactive (let ((file-input (ido-read-file-name "load index file: "
                                                      (file-name-directory codesearch-default-index-file)
@@ -323,7 +324,9 @@ command."
   (setq codesearch-global-data (codesearch-deserialize-index index-file))
   (message (format "index loaded from %s" index-file)))
 
-(defun codesearch-reset-index ()
+;; todo codesearch-index-update
+
+(defun codesearch-index-reset ()
   "Clears completely currently active codesearch index."
   (interactive)
   (setq codesearch-global-data nil)
