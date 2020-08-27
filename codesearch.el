@@ -35,7 +35,7 @@
                                                           (codesearch-genleaf-positions data)))
       (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions pos-list)))))
 
-(defun codesearch-create-trigrams (all-filepaths new-trigrams trigrams-data)
+(defun codesearch-create-trigrams (all-filepaths files-md5 new-trigrams trigrams-data)
   (let* ((smallcase-new-trigrams
           (let ((smallcase-datas (codesarch-create-trigram-tree)))
             (avl-tree-mapc (lambda (node) (codesearch-add-list-to-data smallcase-datas
@@ -46,11 +46,12 @@
     (if (codesearch-data-p trigrams-data)
         (progn
           (setf (codesearch-data-files trigrams-data) all-filepaths)
-          (setf (codesearch-data-files-md5 trigrams-data) (mapcar 'codesearch-md5-file all-filepaths))
+          (setf (codesearch-data-files-md5 trigrams-data) files-md5)
+          (setf (codesearch-data-trigrams trigrams-data) new-trigrams )
           (setf (codesearch-data-smallcase-trigrams trigrams-data) smallcase-new-trigrams )
           trigrams-data)
       (make-codesearch-data :files        all-filepaths
-                            :files-md5    (mapcar 'codesearch-md5-file all-filepaths)
+                            :files-md5    files-md5
                             :trigrams     new-trigrams
                             :smallcase-trigrams smallcase-new-trigrams))))
 
@@ -95,7 +96,10 @@
                       (if (codesearch-valid-trigram tri)
                           (codesearch-add-to-data new-trigrams tri pos file-index)))))))))
 
-      (prog1 (codesearch-create-trigrams all-filepaths new-trigrams trigrams-data)
+      (prog1 (codesearch-create-trigrams all-filepaths
+                                         (mapcar 'codesearch-md5-file all-filepaths)
+                                         new-trigrams
+                                         trigrams-data)
         (let ((warning-msg (let ((stale-files-count (seq-count (lambda (x) (not x)) all-filepaths)))
                              (if (> stale-files-count 10)
                                  (format " (%d stale files in index data, consider running codesearch-cleanup-data)"
@@ -115,8 +119,7 @@
   (let* ((files (codesearch-data-files data))
          (files-md5 (codesearch-data-files-md5 data))
          (trigrams (codesearch-data-trigrams data))
-         (smallcase-trigrams (codesearch-data-smallcase-trigrams data))
-         (raw-data (list files files-md5 (avl-tree-flatten trigrams) (avl-tree-flatten smallcase-trigrams))))
+         (raw-data (list files files-md5 (avl-tree-flatten trigrams))))
     (with-temp-file out-file
         (insert (with-output-to-string (print raw-data))))
     (message (format "index saved in %s" out-file))))
@@ -131,18 +134,11 @@
            (files (elt raw-data 0))
            (files-md5 (elt raw-data 1))
            (trigrams (elt raw-data 2))
-           (smallcase-trigrams (elt raw-data 3))
-           (data (make-codesearch-data :files files
-                                       :files-md5 files-md5)))
+           (data (make-codesearch-data)))
       (let ((trigram-tree (codesarch-create-trigram-tree)))
         (dolist (tri-data trigrams)
           (avl-tree-enter trigram-tree tri-data))
-        (setf (codesearch-data-trigrams data) trigram-tree))
-
-      (let ((smallcase-trigram-tree (codesarch-create-trigram-tree)))
-        (dolist (tri-data smallcase-trigrams)
-          (avl-tree-enter smallcase-trigram-tree tri-data))
-        (setf (codesearch-data-smallcase-trigrams data) smallcase-trigram-tree))
+        (codesearch-create-trigrams files files-md5 trigram-tree data))
       data)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -334,7 +330,9 @@ command."
                                                      (file-name-nondirectory codesearch-default-index-file))))
                  (list file-input)))
   (setq codesearch-global-data (codesearch-deserialize-index index-file))
-  (message (format "index loaded from %s" index-file)))
+  (message (format "%d files indexing loaded from %s"
+                   (length (codesearch-data-files codesearch-global-data))
+                   index-file)))
 
 (defun codesearch-index-update ()
   "Update all modified file listed in the index"
@@ -380,7 +378,7 @@ regenerate all the data so it will take some time."
   ;;                                               (incf cleaned-up-entries-count))))
   ;;                                         new-positions)))
   ;;                  (codesearch-data-trigrams data))
-  ;;   (prog1 (codesearch-create-trigrams new-files (codesearch-data-trigrams data) data)
+  ;;   (prog1 (codesearch-create-trigrams new-files new-files-md5 (codesearch-data-trigrams data) data)
   ;;     (message (format "cleaned up %d trigram entries from %d files"
   ;;                      cleaned-up-entries-count
   ;;                      (- (length old-files) (length new-files))))))
