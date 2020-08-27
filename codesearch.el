@@ -18,7 +18,8 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; generate trigrams data
 
-(defun codesearch-md5-file (file) (if file (with-temp-buffer (insert-file-contents file) (md5 (buffer-string)))))
+(defun codesearch-md5-file (file) (if (and file (file-exists-p file))
+                                      (with-temp-buffer (insert-file-contents file) (md5 (buffer-string)))))
 
 (defun codesearch-add-to-data (datas tri pos file-index)
   (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
@@ -53,6 +54,12 @@
                             :trigrams     new-trigrams
                             :smallcase-trigrams smallcase-new-trigrams))))
 
+(defun codesearch-valid-trigram (tri)
+  (and (stringp tri)
+       (= (length tri) 3)
+       (not (seq-some (lambda (c) (eq c ?\s)) tri))
+       (not (seq-some (lambda (c) (eq c ?\t)) tri))))
+
 (defun codesearch-update-trigrams (filepaths &optional trigrams-data)
   (let* ((start-time (float-time))
          (all-filepaths (if (codesearch-data-p trigrams-data)
@@ -74,27 +81,29 @@
                (file-index (length all-filepaths)))
           (message (format "generating index for file %s [%d/%d]..." filepath i filepaths-count))
 
-          
           (let ((existing-file-index (seq-position all-filepaths filepath 'string=)))
             (if existing-file-index (setf (elt all-filepaths existing-file-index) nil)))
+
           (setq all-filepaths (vconcat all-filepaths (vector filepath)))
-          (with-temp-buffer
-            (insert-file-contents filepath)
-            (let ((max (- (point-max) 3)))
-              (dotimes (i max)
-                (let* ((pos (+ i 1))
-                       (tri (buffer-substring pos (+ pos 3))))
-                  ;; todo: ignore trigrams with spaces and tabs?
-                  (codesearch-add-to-data new-trigrams tri pos file-index)))))))
+          (if (file-exists-p filepath)
+              (with-temp-buffer
+                (insert-file-contents filepath)
+                (let ((max (- (point-max) 3)))
+                  (dotimes (i max)
+                    (let* ((pos (+ i 1))
+                           (tri (buffer-substring pos (+ pos 3))))
+                      (if (codesearch-valid-trigram tri)
+                          (codesearch-add-to-data new-trigrams tri pos file-index)))))))))
+
       (prog1 (codesearch-create-trigrams all-filepaths new-trigrams trigrams-data)
-        (message (format "done in %.2f secs%s"
-                         (- (float-time) start-time)
-                         (let ((stale-files-count (seq-count (lambda (x) (not x)) all-filepaths)))
-                           (if (> stale-files-count 10)
-                               (format " (%d stale files in index data, consider running codesearch-cleanup-data)" stale-files-count)
-                             (if (> stale-files-count 0)
-                                 (format " (%d stale files in index data)" stale-files-count)
-                               "")))))))))
+        (let ((warning-msg (let ((stale-files-count (seq-count (lambda (x) (not x)) all-filepaths)))
+                             (if (> stale-files-count 10)
+                                 (format " (%d stale files in index data, consider running codesearch-cleanup-data)"
+                                         stale-files-count)
+                               (if (> stale-files-count 0)
+                                   (format " (%d stale files in index data)" stale-files-count)
+                                 "")))))
+          (message (format "done in %.2f secs%s" (- (float-time) start-time) warning-msg)))))))
 
 ;; (setq TEST-DATA (codesearch-update-trigrams (list (buffer-file-name (current-buffer)))))
 ;; (pp TEST-DATA)
@@ -254,17 +263,20 @@
                                      (filename (if codesearch-results-show-full-path?
                                                    filepath
                                                  (file-name-nondirectory filepath)))
-                                     (pos (cdr result)))
-                                (with-temp-buffer filepath
-                                                  (insert-file-contents filepath)
-                                                  (goto-char pos)
-                                                  (let ((line-num (line-number-at-pos pos))
-                                                        (line-start (line-beginning-position))
-                                                        (line-end (line-end-position)))
-                                                    (list pos (vector (format "%s:%d" filename line-num)
-                                                                      (buffer-substring line-start line-end)
-                                                                      filepath
-                                                                      pos))))))
+                                     (pos (cdr result))
+                                     (result-line (if (not (file-exists-p filepath))
+                                                      (cons "??" "!unknown file content (file not found)!")
+                                                      (with-temp-buffer filepath
+                                                                        (insert-file-contents filepath)
+                                                                        (goto-char pos)
+                                                                        (let ((line-num (line-number-at-pos pos))
+                                                                              (line-start (line-beginning-position))
+                                                                              (line-end (line-end-position)))
+                                                                          (cons line-num (buffer-substring line-start line-end)))))))
+                                (list pos (vector (format "%s:%d" filename (car result-line))
+                                                  (cdr result-line)
+                                                  filepath
+                                                  pos))))
                             results)))
       (setq tabulated-list-entries entries))
     (setq tabulated-list-sort-key (cons "file" nil)))
@@ -324,7 +336,10 @@ command."
   (setq codesearch-global-data (codesearch-deserialize-index index-file))
   (message (format "index loaded from %s" index-file)))
 
-;; todo codesearch-index-update
+(defun codesearch-index-update ()
+  "Update all modified file listed in the index"
+  (interactive)
+  (codesearch-update-trigrams (codesearch-data-files codesearch-global-data) codesearch-global-data))
 
 (defun codesearch-index-reset ()
   "Clears completely currently active codesearch index."
