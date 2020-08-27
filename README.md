@@ -38,4 +38,5 @@ an OR fasion. The pipe character cannot currently be escaped.
 ## References
 
 Codesearch paper by Russ Cox @ https://swtch.com/~rsc/regexp/regexp4.html
+
 Dr qubit's avl-tree implementation @ http://www.dr-qubit.org/tags/computing-code-emacs.html
