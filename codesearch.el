@@ -225,6 +225,7 @@
 
 (defvar codesearch-font-lock-defaults nil)
 (defvar codesearch-global-data nil)
+(defvar codesearch-global-data-file nil)
 (defvar codesearch-results-show-full-path? nil)
 (defvar codesearch-query-result nil)
 (defvar codesearch-last-query nil)
@@ -314,22 +315,31 @@ command."
 (defun codesearch-index-save (&optional index-file)
   "Saves the current global codesearch index in the provided index file (default location in ~/.codesearch-index)."
   (interactive (let ((file-input (ido-read-file-name "save to index file: "
-                                                     (file-name-directory codesearch-default-index-file)
-                                                     codesearch-default-index-file
+                                                     (file-name-directory (if codesearch-global-data-file
+                                                                              codesearch-global-data-file
+                                                                            codesearch-default-index-file))
                                                      nil
-                                                     (file-name-nondirectory codesearch-default-index-file))))
+                                                     nil
+                                                     (file-name-nondirectory (if codesearch-global-data-file
+                                                                                 codesearch-global-data-file
+                                                                               codesearch-default-index-file)))))
                  (list file-input)))
   (codesearch-serialize-index codesearch-global-data index-file))
 
 (defun codesearch-index-load (&optional index-file)
   "Loads the current global codesearch index from the provided index file (default location in ~/.codesearch-index)."
   (interactive (let ((file-input (ido-read-file-name "load index file: "
-                                                     (file-name-directory codesearch-default-index-file)
-                                                     codesearch-default-index-file
+                                                     (file-name-directory (if codesearch-global-data-file
+                                                                              codesearch-global-data-file
+                                                                            codesearch-default-index-file))
                                                      nil
-                                                     (file-name-nondirectory codesearch-default-index-file))))
+                                                     nil
+                                                     (file-name-nondirectory (if codesearch-global-data-file
+                                                                                 codesearch-global-data-file
+                                                                               codesearch-default-index-file)))))
                  (list file-input)))
   (setq codesearch-global-data (codesearch-deserialize-index index-file))
+  (setq codesearch-global-data-file index-file)
   (message (format "%d files indexing loaded from %s"
                    (length (codesearch-data-files codesearch-global-data))
                    index-file)))
@@ -343,6 +353,7 @@ command."
   "Clears completely currently active codesearch index."
   (interactive)
   (setq codesearch-global-data nil)
+  (setq codesearch-global-data-file nil)
   (message "current index was reset successfully"))
 
 (defun codesearch-cleanup-data (&optional data)
