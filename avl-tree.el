@@ -593,11 +593,14 @@ is more efficient."
     (setf (avl-tree--root new-tree) (avl-tree--do-copy (avl-tree--root tree)))
     new-tree))
 
-(defun avl-tree-flatten (tree)
+(defun avl-tree-flatten (tree &optional fn)
   "Return a sorted list containing all elements of TREE."
    (let ((treelist nil))
      (avl-tree--mapc
-      (lambda (node) (push (avl-tree--node-data node) treelist))
+      (lambda (node) (push (if fn
+                               (funcall fn (avl-tree--node-data node))
+                             (avl-tree--node-data node))
+                           treelist))
       (avl-tree--root tree) 1)
      treelist))
 

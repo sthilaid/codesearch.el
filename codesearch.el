@@ -9,7 +9,15 @@
 (defun codesearch-data-get-indices (trigrams tri)
   (let ((data (avl-tree-member trigrams
                                (make-codesearch-genleaf :tri tri))))
-    (if data (codesearch-genleaf-positions data) nil)))
+    (if data
+        (seq-reduce (lambda (result file-positions)
+                      (let ((file-index (car file-positions)))
+                        (seq-reduce (lambda (acc pos) (cons (cons file-index pos) acc))
+                                    (cdr file-positions)
+                                    result)))
+                    (codesearch-genleaf-positions data)
+                    nil)
+      nil)))
 
 (defun codesarch-create-trigram-tree ()
   (avl-tree-create (lambda (x y) (string< (codesearch-genleaf-tri x)
@@ -24,34 +32,42 @@
 (defun codesearch-add-to-data (datas tri pos file-index)
   (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
     (if data
-        (setf (codesearch-genleaf-positions data) (cons (cons file-index pos)
-                                                        (codesearch-genleaf-positions data)))
-      (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions (list (cons file-index pos)))))))
+        (let* ((positions (codesearch-genleaf-positions data))
+               (file-positions (assq file-index positions)))
+          (if file-positions
+              (push pos (cdr file-positions))
+            (push (cons file-index (list pos)) (codesearch-genleaf-positions data))))
+      (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions (list (cons file-index (list pos))))))))
 
 (defun codesearch-add-list-to-data (datas tri pos-list)
-  (let ((data (avl-tree-member datas (make-codesearch-genleaf :tri tri))))
-    (if data
-        (setf (codesearch-genleaf-positions data) (append pos-list
-                                                          (codesearch-genleaf-positions data)))
-      (avl-tree-enter datas (make-codesearch-genleaf :tri tri :positions pos-list)))))
+  (dolist (pos-data pos-list)
+    (let ((file-index (car pos-data)))
+      (dolist (pos (cdr pos-data)) (codesearch-add-to-data datas tri pos file-index)))))
 
 (defun codesearch-create-trigrams (all-filepaths files-md5 new-trigrams trigrams-data)
-  (let* ((smallcase-new-trigrams
+  (let* ((all-filepaths-vector (vconcat all-filepaths))
+         (files-md5-vector (vconcat files-md5))
+         (smallcase-new-trigrams
           (let ((smallcase-datas (codesarch-create-trigram-tree)))
             (avl-tree-mapc (lambda (node) (codesearch-add-list-to-data smallcase-datas
                                                                        (downcase (codesearch-genleaf-tri node))
                                                                        (codesearch-genleaf-positions node)))
                            new-trigrams)
             smallcase-datas)))
+    
+    ;; (avl-tree-mapc (lambda (node) (setf (codesearch-genleaf-positions node) (vconcat (codesearch-genleaf-positions node))))
+    ;;                new-trigrams)
+    ;; (avl-tree-mapc (lambda (node) (setf (codesearch-genleaf-positions node) (vconcat (codesearch-genleaf-positions node))))
+    ;;                smallcase-new-trigrams)
     (if (codesearch-data-p trigrams-data)
         (progn
-          (setf (codesearch-data-files trigrams-data) all-filepaths)
-          (setf (codesearch-data-files-md5 trigrams-data) files-md5)
+          (setf (codesearch-data-files trigrams-data) all-filepaths-vector)
+          (setf (codesearch-data-files-md5 trigrams-data) files-md5-vector)
           (setf (codesearch-data-trigrams trigrams-data) new-trigrams )
           (setf (codesearch-data-smallcase-trigrams trigrams-data) smallcase-new-trigrams )
           trigrams-data)
-      (make-codesearch-data :files        all-filepaths
-                            :files-md5    files-md5
+      (make-codesearch-data :files        all-filepaths-vector
+                            :files-md5    files-md5-vector
                             :trigrams     new-trigrams
                             :smallcase-trigrams smallcase-new-trigrams))))
 
@@ -86,7 +102,7 @@
             (if existing-file-index (setf (elt all-filepaths existing-file-index) nil)))
 
           (setq all-filepaths (vconcat all-filepaths (vector filepath)))
-          (if (file-exists-p filepath)
+          (if (and filepath (file-exists-p filepath))
               (with-temp-buffer
                 (insert-file-contents filepath)
                 (let ((max (- (point-max) 3)))
@@ -119,9 +135,14 @@
   (let* ((files (codesearch-data-files data))
          (files-md5 (codesearch-data-files-md5 data))
          (trigrams (codesearch-data-trigrams data))
-         (raw-data (list files files-md5 (avl-tree-flatten trigrams))))
+         (flat-trigrams (avl-tree-flatten trigrams
+                                          (lambda (node) (list (codesearch-genleaf-tri node)
+                                                               (codesearch-genleaf-positions node)))))
+         (raw-data (list files files-md5 flat-trigrams)))
     (with-temp-file out-file
-        (insert (with-output-to-string (print raw-data))))
+      (insert (with-output-to-string (print raw-data)))
+      ;;(json-insert raw-data)
+      )
     (message (format "index saved in %s" out-file))))
 
 (defun codesearch-deserialize-index (index-filename)
@@ -131,13 +152,14 @@
     (insert-file-contents index-filename)
     (let* ((raw-data-str (buffer-string))
            (raw-data (read raw-data-str))
+           ;;(raw-data (json-parse-string raw-data-str))
            (files (elt raw-data 0))
            (files-md5 (elt raw-data 1))
            (trigrams (elt raw-data 2))
            (data (make-codesearch-data)))
       (let ((trigram-tree (codesarch-create-trigram-tree)))
         (dolist (tri-data trigrams)
-          (avl-tree-enter trigram-tree tri-data))
+          (avl-tree-enter trigram-tree (make-codesearch-genleaf :tri (elt tri-data 0) :positions (elt tri-data 1))))
         (codesearch-create-trigrams files files-md5 trigram-tree data))
       data)))
 
@@ -366,34 +388,7 @@ regenerate all the data so it will take some time."
     (setf (codesearch-data-files data) files)
     (setf (codesearch-data-files-md5 data) (codesearch-data-files-md5 new-data))
     (setf (codesearch-data-trigrams data) (codesearch-data-trigrams new-data))
-    (setf (codesearch-data-smallcase-trigrams data) (codesearch-data-smallcase-trigrams new-data)))
-
-  ;; -- this should cleanup the data, but is extremely slow and it seems that it
-  ;; -- is faster to simply faster to regenerate the index data
-  ;; (let* ((old-files (codesearch-data-files data))
-  ;;        (new-files (seq-filter (lambda (f) f) old-files))
-  ;;        (new-files-indices (mapcar (lambda (f) (seq-position new-files f))
-  ;;                                   old-files))
-  ;;        (valid-file-indices (cl-loop for f in old-files
-  ;;                                     for i from 0 to (length old-files)
-  ;;                                     if f collect i))
-  ;;        (cleaned-up-entries-count 0))
-  ;;   (avl-tree-mapc (lambda (leaf) (setf (codesearch-genleaf-positions leaf)
-  ;;                                       (let ((old-positions (codesearch-genleaf-positions leaf))
-  ;;                                             (new-positions '()))
-  ;;                                         (dotimes (i (length old-positions))
-  ;;                                           (let ((pos (elt old-positions i)))
-  ;;                                             (if (member (car pos) valid-file-indices)
-  ;;                                                 (push (cons (elt new-files-indices (car pos)) (cdr pos))
-  ;;                                                       new-positions)
-  ;;                                               (incf cleaned-up-entries-count))))
-  ;;                                         new-positions)))
-  ;;                  (codesearch-data-trigrams data))
-  ;;   (prog1 (codesearch-create-trigrams new-files new-files-md5 (codesearch-data-trigrams data) data)
-  ;;     (message (format "cleaned up %d trigram entries from %d files"
-  ;;                      cleaned-up-entries-count
-  ;;                      (- (length old-files) (length new-files))))))
-  )
+    (setf (codesearch-data-smallcase-trigrams data) (codesearch-data-smallcase-trigrams new-data))))
 
 (defun codesearch (query is-case-sensitive?)
   "Perform and browse results of codesearch query. Requires that
